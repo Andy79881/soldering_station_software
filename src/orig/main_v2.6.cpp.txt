@@ -1,16 +1,12 @@
-/* Mais_kolben V2.8 with code modifications due to changed key layout
+/* Mais_kolben V2.6 with modifications due to different HW
   credits for original source code go to HannIO (Heise Make 5/2016)
   Project Github repository: https://github.com/ArduinoHannover/Maiskolben/
  
   modifications by A. Nestler
   
-  change descriptions (Time Date: 12:30 18.02.2024):
-  - definitions.h changed to changed key layout (key to pin assignment)
-    - Key: Old -> New
-    - S4: Power/ STBY -> UP 
-	- S5: UP -> Down 
-	- S6: DOWN -> Power/ STBY
-  - TFT_BL added in setup routine (D0 set to output and High)
+  change descriptions:
+  - definitions.h changed to different HW (pin usage)
+  - TFT_BL added in setup routine (set to output and High)
   
   */
 
@@ -24,19 +20,12 @@
 #include "definitions.h"
 
 /*
- * If your display stays white, uncomment this.
- * Cut reset trace (on THT on upper layer/0R), connect STBY_NO (A1) with reset of TFT (at 4050).
- * See also readme in mechanical folder for reference.
- */
-//#define USE_TFT_RESET
-
-/*
  * If red is blue and blue is red change this (2.0 and above have new display types)
  * If not sure, leave commented, you will be shown a setup screen
  */
 //#define HARDWARE_DEFINED_TFT 2
 /*
- * Based on your Hardware-Revision there may be modifications to the PCB. 
+ * Based on your Hardware-Revision there may be modifications to the PCB.
  * In V3 and up is a second voltage measurement circuit.
  * For THT this should be set to anything < 3
  * Normally leave this commented as it is stored in EEPROM
@@ -51,7 +40,7 @@
 //#define INSTALL
 //#define TEST_ADC
 
-volatile boolean off = true, stby = true, stby_layoff = false, sw_stby_old = false, sw_up_old = false, sw_down_old = false, clear_display = true, store_invalid = true, menu = false;
+volatile boolean off = true, stby = true, stby_layoff = true, sw_stby_old = false, sw_up_old = false, sw_down_old = false, clear_display = true, store_invalid = true, menu = false;
 volatile uint8_t pwm, threshold_counter;
 volatile int16_t cur_t, last_measured;
 volatile error_type error = NO_ERROR;
@@ -73,11 +62,7 @@ uint8_t revision = 1;
 boolean menu_dismissed = false;
 boolean autopower_repeat_under = false;
 
-#ifdef USE_TFT_RESET
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS,  TFT_DC, STBY_NO);
-#else
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS,  TFT_DC, 0);
-#endif
 #define ST7735_GRAY 0x94B2
 
 PID heaterPID(&cur_td, &pid_val, &set_td, kp, ki, kd, DIRECT);
@@ -113,10 +98,10 @@ void setup(void) {
 	pinMode(SW_STBY, INPUT_PULLUP);
 	pinMode(TFT_CS, OUTPUT);
 	digitalWrite(TFT_CS, HIGH);
-	pinMode(TFT_BL, OUTPUT); // added ANe 12:29 18.02.2024
-	digitalWrite(TFT_BL, HIGH); // activate back light, added ANe 12:29 18.02.2024
+	pinMode(TFT_BL, OUTPUT);
+	digitalWrite(TFT_BL, HIGH); // activate back light
 	Serial.begin(115200);
-	
+
 	boolean force_menu = false;
 	if (EEPROM.read(0) != EEPROM_CHECK) {
 		EEPROM.update(0, EEPROM_CHECK);
@@ -260,7 +245,7 @@ void setup(void) {
 
 	for (uint8_t i = 0; i < 50; i++)
 		measureVoltage(); //measure average 50 times to get realistic results
-	
+
 	tft.fillScreen(ST7735_BLACK);
 	last_measured = getTemperature();
 	Timer1.initialize(1000);
@@ -273,7 +258,7 @@ void setup(void) {
 	}
 }
 
-void updateRevision(void) {	
+void updateRevision(void) {
 #if (HARDWARE_REVISION > 2)
 	EEPROM.update(EEPROM_REVISION, HARDWARE_REVISION);
 	revision = 3;
@@ -315,7 +300,7 @@ void optionMenu(void) {
 				tft.setTextColor(ST7735_GRAY);
 			#endif
 			tft.println(" Heat on boot");
-			
+
 			tft.setCursor(0, (opt+2)*18);
 			tft.setTextColor(ST7735_WHITE);
 			tft.print(">");
@@ -367,7 +352,7 @@ void updateEEPROM(void) {
 	}
 	EEPROM.update(8, set_t >> 8);
 	EEPROM.update(9, set_t & 0xFF);
-	EEPROM.update(EEPROM_OPTIONS, (bootheat << 1) | autopower);
+	EEPROM.update(EEPROM_OPTIONS, 1); //Defaults to auto power down
 }
 
 int getTemperature(void) {
@@ -376,7 +361,7 @@ int getTemperature(void) {
 #ifdef TEST_ADC
 	Serial.println(adc);
 #endif
-	if (adc >= 900) { //Illegal value, tip not plugged in - would be around 560deg
+	if (adc >= 1020) { //Illegal value, tip not plugged in
 		analogWrite(HEATER_PWM, 0);
 		if (!off)
 			setError(NO_TIP);
@@ -384,8 +369,9 @@ int getTemperature(void) {
 	} else {
 		analogWrite(HEATER_PWM, pwm); //switch heater back to last value
 	}
+	return round(adc*0.574503+43.5); //nasty resistors...
 	//return round(adc < 210 ? (((float)adc) * 0.530805 + 38.9298) : (((float)adc) * 0.415375 + 64.6123)); //old conversion
-	return round(((float) adc) * ADC_TO_TEMP_GAIN + ADC_TO_TEMP_OFFSET);
+	//return round(((float) adc)*ADC_TO_TEMP_GAIN+ADC_TO_TEMP_OFFSET); //even older conversion
 }
 
 void measureVoltage(void) {
@@ -444,7 +430,7 @@ void timer_sw_poll(void) {
 	boolean t2 = !digitalRead(SW_T2);
 	boolean t3 = !digitalRead(SW_T3);
 
-	//simultanious push of multiple buttons 
+	//simultanious push of multiple buttons
 	if (t1 + t2 + t3 > 1) {
 		store_to = 255;
 		store_invalid = true;
@@ -496,8 +482,8 @@ void timer_sw_poll(void) {
 		cnt_but_press++;
 		if((cnt_but_press >= 100) || sw_changed) {
 			setStandby(false);
-			if(sw_up && set_t < TEMP_MAX) set_t++;
-			else if (sw_down && set_t > TEMP_MIN) set_t--;
+			if(sw_up && set_t < MAX_TEMP) set_t++;
+			else if (sw_down && set_t > MIN_TEMP) set_t--;
 			if(!sw_changed) cnt_but_press = 97;
 			updateEEPROM();
 		}
@@ -571,7 +557,7 @@ void display(void) {
 			tft.setTextColor(ST7735_YELLOW, ST7735_BLACK);
 			tft.setCursor(10,112);
 			tft.print("         OK ");
-			
+
 			tft.setTextColor(ST7735_RED, ST7735_BLACK);
 			tft.setCursor(36,26);
 			tft.setTextSize(3);
@@ -590,7 +576,7 @@ void display(void) {
 		tft.print(stored[1]);
 		tft.write(' ');
 		tft.print(stored[2]);
-		
+
 		if (set_t_old != set_t || old_stby != (stby || stby_layoff)) {
 			tft.setCursor(36,26);
 			tft.setTextSize(3);
@@ -604,8 +590,8 @@ void display(void) {
 				tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
 				tft.write(' ');
 				tft.print(set_t);
-				tft.fillTriangle(149, 50, 159, 50, 154, 38, (set_t < TEMP_MAX) ? ST7735_WHITE : ST7735_GRAY);
-				tft.fillTriangle(149, 77, 159, 77, 154, 90, (set_t > TEMP_MIN) ? ST7735_WHITE : ST7735_GRAY);
+				tft.fillTriangle(149, 50, 159, 50, 154, 38, (set_t < MAX_TEMP) ? ST7735_WHITE : ST7735_GRAY);
+				tft.fillTriangle(149, 77, 159, 77, 154, 90, (set_t > MIN_TEMP) ? ST7735_WHITE : ST7735_GRAY);
 			}
 		}
 		if (!off) {
@@ -644,8 +630,8 @@ void display(void) {
 			if (cur_t_old == 999) {
 				tft.fillRect(44,76,72,16,ST7735_BLACK);
 			}
-			tft.setTextColor(off ? temperature < TEMP_COLD ? ST7735_CYAN : ST7735_RED : tft.color565(min(10,abs(temperature-target_t))*25, 250 - min(10,max(0,(abs(temperature-target_t)-10)))*25, 0), ST7735_BLACK);
-			if (temperature < TEMP_COLD) {
+			tft.setTextColor(off ? temperature < 50 ? ST7735_CYAN : ST7735_RED : tft.color565(min(10,abs(temperature-target_t))*25, 250 - min(10,max(0,(abs(temperature-target_t)-10)))*25, 0), ST7735_BLACK);
+			if (temperature < 60) {
 				tft.print("COLD");
 			} else {
 				tft.write(' ');
@@ -654,10 +640,10 @@ void display(void) {
 			}
 		}
 		if (temperature < cur_t_old)
-			tft.fillRect(max(0, (temperature - TEMP_COLD)/2.4), 0, 160-max(0, (temperature - TEMP_COLD)/2.4), BAR_HEIGHT, ST7735_BLACK);
+			tft.drawFastHLine((int)(temperature/2.6), 0, 160-(int)(temperature/2.6), ST7735_BLACK);
 		else if (cur_t != 999) {
-			for (int16_t i = max(0, (cur_t_old - TEMP_COLD)/2.4); i < max(0, (temperature - TEMP_COLD)/2.4); i++) {
-				tft.drawFastVLine(i, 0, BAR_HEIGHT, tft.color565(min(255, max(0, i*5)), min(255, max(0, 450-i*2.5)), 0));
+			for (int16_t i = 0; i < temperature/2.6; i++) {
+				tft.drawPixel(i, 0, tft.color565(min(255, max(0, i*5)), min(255, max(0, 400-i*2.5)), 0));
 			}
 		}
 		cur_t_old = temperature;
@@ -670,7 +656,7 @@ void display(void) {
 		if (power < 10) tft.write(' ');
 		tft.print(power);
 		tft.write('W');
-		
+
 		if (v < 5.0) {
 			power_source = POWER_USB;
 		} else if (v_c2 < 1.0) {
@@ -754,9 +740,7 @@ void display(void) {
 }
 
 void compute(void) {
-#ifndef USE_TFT_RESET
 	setStandbyLayoff(!digitalRead(STBY_NO)); //do not measure while heater is active, potential is not neccessary == GND
-#endif
 	cur_t = getTemperature();
 	if (off) {
 		target_t = 0;
@@ -765,7 +749,7 @@ void compute(void) {
 		}
 	} else {
 		if (stby_layoff || stby) {
-			target_t = TEMP_STBY;
+			target_t = STBY_TEMP;
 		} else {
 			target_t = set_t;
 		}
@@ -782,7 +766,7 @@ void compute(void) {
 			threshold_counter = THRES_MAX_DECEED; //reset counter to a smaller value to allow small oscillation of temperature
 		}
 	}
-	
+
 	set_td = target_t;
 	cur_td = cur_t;
 	last_measured = cur_t;
@@ -798,20 +782,20 @@ void compute(void) {
 void timer_isr(void) {
 	if (cnt_compute >= TIME_COMPUTE_IN_MS) {
 		analogWrite(HEATER_PWM, 0); //switch off heater to let the low pass settle
-		
+
 		if (cnt_compute >= TIME_COMPUTE_IN_MS+DELAY_BEFORE_MEASURE) {
 			compute();
 			cnt_compute=0;
 		}
 	}
 	cnt_compute++;
-	
+
 	if(cnt_sw_poll >= TIME_SW_POLL_IN_MS){
 		timer_sw_poll();
 		cnt_sw_poll=0;
 	}
 	cnt_sw_poll++;
-	
+
 	if(cnt_measure_voltage >= TIME_MEASURE_VOLTAGE_IN_MS) {
 		measureVoltage();
 		cnt_measure_voltage=0;
@@ -828,7 +812,7 @@ void loop(void) {
 	analogWrite(HEAT_LED, pwm);
 	//Switch to following if the oscillation of the led bothers you
 	//digitalWrite(HEAT_LED, cur_t+5 < target || (abs((int16_t)cur_t-(int16_t)target) <= 5 && (millis()/(stby?1000:500))%2));
-	
+
 	if (sendNext <= millis()) {
 		sendNext += 100;
 #ifndef TEST_ADC
@@ -869,7 +853,7 @@ void loop(void) {
 				if (Serial.available() >= 3) {
 					t = serialReadTemp();
 					//Serial.println(t);
-					if (t <= TEMP_MAX && t >= TEMP_MIN) {
+					if (t <= MAX_TEMP && t >= MIN_TEMP) {
 						set_t = t;
 						updateEEPROM();
 					}
@@ -881,7 +865,7 @@ void loop(void) {
 					uint8_t slot = Serial.read()-'1';
 					if (slot < 3) {
 						t = serialReadTemp();
-						if (t <= TEMP_MAX && t >= TEMP_MIN) {
+						if (t <= MAX_TEMP && t >= MIN_TEMP) {
 							stored[slot] = t;
 							updateEEPROM();
 						}
